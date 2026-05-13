@@ -1,0 +1,73 @@
+name: Unwetterwarnungen auf X posten
+
+on:
+  schedule:
+    # Alle 15 Minuten — GitHub-Action-Cron kann 5–10 Min Verzug haben, das ist OK.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'API-Umgebung'
+        required: true
+        default: 'prod'
+        type: choice
+        options: [prod, stage]
+      dry_run:
+        description: 'Dry-Run (keine Tweets, nur Logs + Screenshot-Artefakt)'
+        required: true
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: write          # damit der state-Commit zurückgeschoben werden kann
+
+concurrency:
+  group: x-poster
+  cancel-in-progress: false # laufende Runs zu Ende laufen lassen — sonst State-Konflikt
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: npm install
+        run: npm install
+
+      - name: Playwright Chromium installieren
+        run: npx playwright install --with-deps chromium
+
+      - name: Worker ausführen
+        env:
+          ENV:              ${{ github.event.inputs.env || 'prod' }}
+          DRY_RUN:          ${{ github.event.inputs.dry_run || 'false' }}
+          RENDER_BASE_URL:  https://tool.wetteralarm.ch/x-warnungen
+          X_TOKENS_DE:      ${{ secrets.X_TOKENS_DE }}
+          X_TOKENS_FR:      ${{ secrets.X_TOKENS_FR }}
+          X_TOKENS_IT:      ${{ secrets.X_TOKENS_IT }}
+        run: node post.js
+
+      - name: State zurück-committen
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "wetteralarm-x-bot"
+          git config user.email "bot@wetteralarm.ch"
+          git add state/posted.json || true
+          git diff --cached --quiet || git commit -m "chore: posted state update"
+          git push || true
+
+      - name: Dry-Run-Screenshot als Artefakt hochladen
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-screenshot
+          path: state/dry-run-*.jpg
+          if-no-files-found: ignore
+          retention-days: 7
