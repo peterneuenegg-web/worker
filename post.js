@@ -163,13 +163,16 @@ async function main() {
         }
     }
 
+    // Screenshot IMMER zur Disk speichern — auch im Live-Modus, damit man im
+    // Action-Artifact nachschauen kann, was der Worker gesehen hat (Debug).
+    if (jpeg) {
+        const mode = DRY_RUN ? 'dry' : 'live';
+        const shotPath = path.join(process.cwd(), 'state', `screenshot-${mode}-${Date.now()}.jpg`);
+        await fs.writeFile(shotPath, jpeg);
+        console.log(`[main] Screenshot abgelegt: ${shotPath}`);
+    }
+
     if (DRY_RUN) {
-        if (jpeg) {
-            // Bild als Artifact für den Workflow speichern.
-            const dbgPath = path.join(process.cwd(), 'state', `dry-run-${Date.now()}.jpg`);
-            await fs.writeFile(dbgPath, jpeg);
-            console.log(`[main] DRY_RUN: Bild abgelegt unter ${dbgPath}`);
-        }
         // State updaten, damit beim nächsten Dry-Run nicht alles als "neu" erscheint.
         markPosted(state, active);
         await saveState(STATE_FILE, state);

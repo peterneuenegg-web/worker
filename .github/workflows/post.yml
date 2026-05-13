@@ -63,11 +63,15 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: posted state update"
           git push || true
 
-      - name: Dry-Run-Screenshot als Artefakt hochladen
-        if: ${{ github.event.inputs.dry_run == 'true' }}
+      - name: Screenshot(s) als Artefakt hochladen
+        # if: always() — auch wenn vorherige Steps fehlschlugen (z.B. X-API-Error).
+        # So sehen wir das Bild auch wenn das Tweet-Posting scheitert.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dry-run-screenshot
-          path: state/dry-run-*.jpg
+          name: screenshot-${{ github.run_id }}
+          path: |
+            state/screenshot-*.jpg
+            state/dry-run-*.jpg
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
