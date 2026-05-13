@@ -82,7 +82,12 @@ function loadTwitterClient(lang) {
         console.error(`[main] ${envName} unvollständig — apiKey/apiSecret/accessToken/accessSecret nötig`);
         return null;
     }
-    return new TwitterApi({ appKey: apiKey, appSecret, accessToken, accessSecret });
+    return new TwitterApi({
+        appKey:       apiKey,
+        appSecret:    apiSecret,
+        accessToken:  accessToken,
+        accessSecret: accessSecret
+    });
 }
 
 // ===========================================
