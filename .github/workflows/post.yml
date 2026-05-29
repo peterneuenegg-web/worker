@@ -2,8 +2,9 @@ name: Unwetterwarnungen auf X posten
 
 on:
   schedule:
-    # Alle 15 Minuten — GitHub-Action-Cron kann 5–10 Min Verzug haben, das ist OK.
-    - cron: '*/15 * * * *'
+    # Alle 5 Minuten — GitHub-Action-Cron kann 5–10 Min Verzug haben, das ist OK.
+    # Cooldown-Logik in post.js entscheidet, ob ein konkreter Run posten darf.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       env:

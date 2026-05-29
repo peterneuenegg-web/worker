@@ -27,8 +27,23 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { TwitterApi } from 'twitter-api-v2';
-import { buildTweets, filterActiveAlarms } from './lib/templates.js';
-import { loadState, saveState, findNewAlarms, markPosted } from './lib/dedupe.js';
+import {
+    buildTweets,
+    buildClearTweets,
+    filterActiveAlarms,
+    hasAnyActiveAlarmAllLevels
+} from './lib/templates.js';
+import {
+    loadState,
+    saveState,
+    findNewAlarms,
+    markPosted,
+    getLastPostedAt,
+    getLastPostType,
+    getFirstSeenAt,
+    setFirstSeenAt,
+    clearFirstSeenAt
+} from './lib/dedupe.js';
 import { captureMap } from './render-screenshot.js';
 
 const ENV = process.env.ENV === 'stage' ? 'stage' : 'prod';
@@ -116,6 +131,92 @@ async function postToX(client, lang, text, imageBuffer) {
 }
 
 // ===========================================
+// Cooldown — orientiert sich am ÄLTESTEN noch nicht geposteten Alarm.
+// ===========================================
+//
+// Idee: Wenn neue Alarme rein-tröpfeln und der frühste erst in einigen Stunden
+//       aktiv wird, lohnt es sich abzuwarten und mehrere Alarme zu bündeln.
+//       Wenn er aber unmittelbar bevorsteht (≤2h), sofort raus damit.
+//
+//   Lead-Time bis valid_from des ältesten neuen Alarms:
+//     ≤ 2h   → kein Cooldown (sofort posten)
+//     2–6h   → 30 min Cooldown seit letztem Post
+//     > 6h   → 60 min Cooldown
+//
+// "Ältester noch nicht geposteter Alarm" = der mit dem frühsten valid_from
+// in der Liste der NEUEN Alarme (findNewAlarms).
+const COOLDOWN_TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const COOLDOWN_SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+function computeCooldownMs(newAlarms, now = new Date()) {
+    if (!Array.isArray(newAlarms) || newAlarms.length === 0) return 0;
+    const earliestValidFrom = Math.min(
+        ...newAlarms.map(a => new Date(a.valid_from).getTime())
+    );
+    const leadTimeMs = earliestValidFrom - now.getTime();
+    // Bereits aktiv oder in <2h aktiv: nicht warten.
+    if (leadTimeMs <= COOLDOWN_TWO_HOURS_MS) return 0;
+    if (leadTimeMs <= COOLDOWN_SIX_HOURS_MS) return 30 * 60 * 1000;
+    return 60 * 60 * 1000;
+}
+
+function formatDurationMs(ms) {
+    const min = Math.round(ms / 60000);
+    if (min < 60) return `${min} min`;
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+// ===========================================
+// Screenshot-Helper — wird sowohl für Warnungs- als auch Entwarnungs-Tweets
+// gebraucht (bei Entwarnung ist die Karte einfach leer — User-Spez: "Zeige
+// auch hier die Karte").
+// ===========================================
+async function takeScreenshot(label) {
+    const renderUrl = `${RENDER_BASE_URL}/render.html?env=${ENV}`;
+    const { jpeg, error } = await captureMap(renderUrl);
+    if (error) {
+        console.error(`[main:${label}] Screenshot fehlgeschlagen:`, error);
+    }
+    if (jpeg) {
+        const mode = DRY_RUN ? 'dry' : 'live';
+        const shotPath = path.join(
+            process.cwd(),
+            'state',
+            `screenshot-${mode}-${label}-${Date.now()}.jpg`
+        );
+        await fs.writeFile(shotPath, jpeg);
+        console.log(`[main:${label}] Screenshot abgelegt: ${shotPath}`);
+    }
+    return { jpeg, error };
+}
+
+// Setzt _firstSeenAt zurück, falls gerade keine neuen Alarme anstehen — damit
+// die nächste Welle nicht fälschlich gegen einen alten Timer geprüft wird.
+async function resetFirstSeenIfSet(state) {
+    if (getFirstSeenAt(state) > 0) {
+        clearFirstSeenAt(state);
+        await saveState(STATE_FILE, state);
+        console.log('[main] _firstSeenAt zurückgesetzt (keine offenen Alarme).');
+    }
+}
+
+async function postAllLangs(tweets, jpeg) {
+    const results = {};
+    for (const lang of LANGS) {
+        const text = tweets[lang];
+        if (!text) {
+            results[lang] = { ok: false, reason: 'no-text' };
+            continue;
+        }
+        const client = loadTwitterClient(lang);
+        results[lang] = await postToX(client, lang, text, jpeg);
+    }
+    return results;
+}
+
+// ===========================================
 // Main
 // ===========================================
 
@@ -124,20 +225,123 @@ async function main() {
 
     const alarms = await fetchAlarms();
     const active = filterActiveAlarms(alarms);
-    console.log(`[main] ${active.length} aktive Alarme (Stufe >= 2) von insgesamt ${alarms.length}`);
+    const anyActiveAllLevels = hasAnyActiveAlarmAllLevels(alarms);
+    console.log(
+        `[main] ${active.length} aktive Alarme (Stufe >= 2) von ${alarms.length}` +
+        ` — anyActiveAllLevels=${anyActiveAllLevels}`
+    );
 
-    if (active.length === 0) {
-        console.log('[main] Keine aktiven Warnungen → kein Post nötig.');
+    const state = await loadState(STATE_FILE);
+    const lastPostedAt = getLastPostedAt(state);
+    const lastPostType = getLastPostType(state);
+
+    // ---------------------------------------------------------------
+    // 1) Entwarnungs-Logik
+    // ---------------------------------------------------------------
+    // Es gibt KEINEN aktiven Alarm mehr (auch keine Stufe 1), aber der letzte
+    // Post war eine Warnung — also einmalig Entwarnung posten.
+    if (!anyActiveAllLevels) {
+        // Welle vorbei → ggf. hängenden _firstSeenAt-Timer aufräumen.
+        await resetFirstSeenIfSet(state);
+        if (lastPostType === 'warning') {
+            console.log('[main] Keine aktiven Warnungen mehr → Entwarnungs-Tweet.');
+            const tweets = buildClearTweets();
+            for (const lang of LANGS) {
+                console.log(
+                    `\n[tweet:${lang}] (clear, ${tweets[lang].length} Zeichen)\n${tweets[lang]}\n`
+                );
+            }
+            const { jpeg, error: shotError } = await takeScreenshot('clear');
+            if (shotError && !DRY_RUN) {
+                console.error('[main] Entwarnung: ohne Bild kein Post → abbrechen.');
+                return;
+            }
+
+            if (DRY_RUN) {
+                markPosted(state, [], 'clear');
+                await saveState(STATE_FILE, state);
+                console.log('[main] DRY_RUN clear: State aktualisiert. Kein Tweet gesendet.');
+                return;
+            }
+
+            const results = await postAllLangs(tweets, jpeg);
+            const anySuccess = Object.values(results).some(r => r.ok);
+            if (anySuccess) {
+                markPosted(state, [], 'clear');
+                await saveState(STATE_FILE, state);
+                console.log('[main] Entwarnung gepostet, State persistiert.');
+            } else {
+                console.error('[main] Entwarnung: kein Tweet erfolgreich → State NICHT aktualisiert.');
+                process.exitCode = 1;
+            }
+            return;
+        }
+        console.log('[main] Keine aktiven Warnungen, letzter Post war auch keine Warnung → nichts zu tun.');
         return;
     }
 
-    const state = await loadState(STATE_FILE);
+    // ---------------------------------------------------------------
+    // 2) Warnungs-Logik (es gibt Stufe-2/3-Alarme — nur diese triggern Posts)
+    // ---------------------------------------------------------------
+    if (active.length === 0) {
+        // Es laufen nur Stufe-1-Alarme — kein Post, aber auch keine Entwarnung.
+        console.log('[main] Nur Stufe-1-Alarme aktiv → kein Post, keine Entwarnung.');
+        await resetFirstSeenIfSet(state);
+        return;
+    }
+
     const newOnes = findNewAlarms(active, state);
     console.log(`[main] ${newOnes.length} davon sind NEU (nicht im posted.json)`);
 
     if (newOnes.length === 0) {
         console.log('[main] Keine neuen Alarm-IDs → kein Post.');
+        await resetFirstSeenIfSet(state);
         return;
+    }
+
+    // Intelligenter Cooldown: berechnet aus Lead-Time des ÄLTESTEN neuen Alarms.
+    //
+    // Referenzzeitpunkt für die "ist der Cooldown schon abgelaufen?"-Frage:
+    //   1. _lastPostedAt — wenn schon einmal gepostet wurde
+    //   2. _firstSeenAt  — wenn noch nie gepostet wurde, aber die Welle bereits
+    //                      einmal gesehen wurde (Timer aus vorherigem Run)
+    //   3. now           — Erstsichtung: Timer setzen und beim nächsten Run posten
+    const cooldownMs = computeCooldownMs(newOnes);
+    let cooldownRef = lastPostedAt;
+    let cooldownRefLabel = 'letztem Post';
+    if (cooldownRef === 0 && cooldownMs > 0) {
+        cooldownRef = getFirstSeenAt(state);
+        cooldownRefLabel = 'erster Sichtung';
+        if (cooldownRef === 0) {
+            // Erstsichtung — Timer starten, State speichern, warten bis nächster Run.
+            const now = Date.now();
+            setFirstSeenAt(state, now);
+            await saveState(STATE_FILE, state);
+            console.log(
+                `[main] Erste Sichtung der Welle — Cooldown ${formatDurationMs(cooldownMs)}` +
+                ` startet jetzt. Nächster Run prüft erneut.`
+            );
+            return;
+        }
+    }
+
+    if (cooldownMs > 0 && cooldownRef > 0) {
+        const elapsed = Date.now() - cooldownRef;
+        if (elapsed < cooldownMs) {
+            const remaining = cooldownMs - elapsed;
+            console.log(
+                `[main] Cooldown aktiv: ${formatDurationMs(cooldownMs)} verlangt,` +
+                ` ${formatDurationMs(elapsed)} seit ${cooldownRefLabel} —` +
+                ` warte noch ${formatDurationMs(remaining)}.`
+            );
+            return;
+        }
+        console.log(
+            `[main] Cooldown ${formatDurationMs(cooldownMs)} seit ${cooldownRefLabel}` +
+            ` abgelaufen → poste.`
+        );
+    } else {
+        console.log('[main] Kein Cooldown (älterer Alarm ist akut → sofort posten).');
     }
 
     // Tweet-Texte vorbereiten (vollständiges aktives Set, nicht nur die neuen).
@@ -152,50 +356,24 @@ async function main() {
         }
     }
 
-    // Screenshot bauen.
-    const renderUrl = `${RENDER_BASE_URL}/render.html?env=${ENV}`;
-    const { jpeg, error: shotError } = await captureMap(renderUrl);
-    if (shotError) {
-        console.error('[main] Screenshot fehlgeschlagen:', shotError);
-        if (!DRY_RUN) {
-            // Im Live-Modus: ohne Bild keinen Tweet schicken.
-            return;
-        }
-    }
-
-    // Screenshot IMMER zur Disk speichern — auch im Live-Modus, damit man im
-    // Action-Artifact nachschauen kann, was der Worker gesehen hat (Debug).
-    if (jpeg) {
-        const mode = DRY_RUN ? 'dry' : 'live';
-        const shotPath = path.join(process.cwd(), 'state', `screenshot-${mode}-${Date.now()}.jpg`);
-        await fs.writeFile(shotPath, jpeg);
-        console.log(`[main] Screenshot abgelegt: ${shotPath}`);
+    // Screenshot.
+    const { jpeg, error: shotError } = await takeScreenshot('warning');
+    if (shotError && !DRY_RUN) {
+        console.error('[main] Warnung: ohne Bild kein Post → abbrechen.');
+        return;
     }
 
     if (DRY_RUN) {
-        // State updaten, damit beim nächsten Dry-Run nicht alles als "neu" erscheint.
-        markPosted(state, active);
+        markPosted(state, active, 'warning');
         await saveState(STATE_FILE, state);
         console.log('[main] DRY_RUN: State aktualisiert. Keine Tweets gesendet.');
         return;
     }
 
-    // Live-Posting auf allen drei Accounts.
-    const results = {};
-    for (const lang of LANGS) {
-        const text = tweets[lang];
-        if (!text) {
-            results[lang] = { ok: false, reason: 'no-text' };
-            continue;
-        }
-        const client = loadTwitterClient(lang);
-        results[lang] = await postToX(client, lang, text, jpeg);
-    }
-
-    // Nur wenn mindestens ein Tweet erfolgreich gepostet wurde, State aktualisieren.
+    const results = await postAllLangs(tweets, jpeg);
     const anySuccess = Object.values(results).some(r => r.ok);
     if (anySuccess) {
-        markPosted(state, active);
+        markPosted(state, active, 'warning');
         await saveState(STATE_FILE, state);
         console.log('[main] State persistiert.');
     } else {
