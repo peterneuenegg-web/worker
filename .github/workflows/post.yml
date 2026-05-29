@@ -27,6 +27,12 @@ concurrency:
   group: x-poster
   cancel-in-progress: false # laufende Runs zu Ende laufen lassen — sonst State-Konflikt
 
+# upload-artifact@v5 deklariert intern noch Node 20 — mit diesem Flag zwingt der
+# Runner Node 24, wie von der Deprecation-Warning empfohlen. Sobald upload-artifact
+# einen Tag mit korrekt deklariertem Node 24 ausliefert, kann das wieder weg.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   post:
     runs-on: ubuntu-latest
