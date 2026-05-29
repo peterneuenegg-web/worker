@@ -4,13 +4,23 @@
  * Erwartet, dass die Render-Seite window.unwetterkarte_ready = true setzt,
  * sobald Tiles und Warnpolygone vollständig geladen sind.
  *
- * Output: JPEG-Buffer (~150–300 kB) optimiert auf 1200×675 (Twitter-16:9).
+ * Output: JPEG-Buffer optimiert auf 2400×1350 Px (Twitter-16:9 @2x).
+ *
+ * Warum 2x?
+ *   1. Fullscreen auf Retina-/HiDPI-Displays bleibt scharf — X skaliert sonst
+ *      die 1200×675 hoch und das wirkt weichgezeichnet.
+ *   2. Bei fractional Leaflet-Zoom (8.25) entstehen bei DSF=1 zwischen Tile-
+ *      Reihen 1-px-Naht-Artefakte — bei DSF=2 sind die Tile-Pixel-Grenzen
+ *      ganzzahlig und das Phänomen verschwindet.
  */
 
 import { chromium } from 'playwright';
 import sharp from 'sharp';
 
+// CSS-Viewport bleibt 1200×675 — nur die Pixel-Dichte verdoppelt sich.
+// Tatsächlicher Screenshot-Output ist 2400×1350 px.
 const VIEWPORT = { width: 1200, height: 675 };
+const DEVICE_SCALE_FACTOR = 2;
 const READY_TIMEOUT_MS = 25_000;
 // Sicherheits-Puffer NACH dem Ready-Flag — manchmal sind Tiles noch leicht am Nachladen.
 const SETTLE_DELAY_MS = 800;
@@ -29,7 +39,7 @@ export async function captureMap(renderUrl) {
     try {
         const context = await browser.newContext({
             viewport: VIEWPORT,
-            deviceScaleFactor: 1,
+            deviceScaleFactor: DEVICE_SCALE_FACTOR,
             userAgent: 'Wetter-Alarm-X-Poster/1.0 (+https://wetteralarm.ch)'
         });
         page = await context.newPage();

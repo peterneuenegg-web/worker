@@ -27,12 +27,6 @@ concurrency:
   group: x-poster
   cancel-in-progress: false # laufende Runs zu Ende laufen lassen — sonst State-Konflikt
 
-# upload-artifact@v5 deklariert intern noch Node 20 — mit diesem Flag zwingt der
-# Runner Node 24, wie von der Deprecation-Warning empfohlen. Sobald upload-artifact
-# einen Tag mit korrekt deklariertem Node 24 ausliefert, kann das wieder weg.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -74,7 +68,7 @@ jobs:
         # if: always() — auch wenn vorherige Steps fehlschlugen (z.B. X-API-Error).
         # So sehen wir das Bild auch wenn das Tweet-Posting scheitert.
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: screenshot-${{ github.run_id }}
           path: |
