@@ -1,68 +1,88 @@
 # wetteralarm-x-poster
 
-Automatischer X/Twitter-Bot für aktive Wetter-Alarm-Unwetterwarnungen in DE/FR/IT.
+GitHub-Action-Worker für den X-Unwetterwarnungs-Bot (DE / FR / IT).
 
-## Funktionsweise
-
-Alle 15 Min via GitHub-Actions-Cron:
-
-1. Holt aktive Alarme von `my.wetteralarm.ch/v7/alarms/meteo-and-hail.json`.
-2. Filtert Stufe 1 (Mässig) aus, behält Stufe ≥ 2.
-3. Vergleicht mit `state/posted.json` — gibt es **neue** `alarm.id`?
-4. Wenn ja:
-   - Playwright öffnet `tool.wetteralarm.ch/x-warnungen/render.html` → Screenshot.
-   - Tweet-Texte für DE / FR / IT werden gebaut (Stufenfarben, Bündelung, Gültigkeitszeitraum).
-   - Bild + Text auf alle drei X-Accounts.
-   - State wird aktualisiert und committed.
-5. Wenn nein: nichts.
+Architektur, Datenfluss, Cooldown- und Entwarnungs-Logik sind im
+[Haupt-README](../README.md) erklärt — diese Datei beschreibt nur das
+Setup und den lokalen Testlauf.
 
 ## Setup
 
 ### 1. Repo public auf GitHub
 
-GitHub Actions sind im public repo unbegrenzt kostenlos.
+GitHub Actions sind im public repo unbegrenzt kostenlos. Achtung: keine
+Secrets in den Code committen (siehe Punkt 2).
 
 ### 2. Secrets in GitHub Actions
 
-Settings → Secrets and variables → Actions → New secret. Drei Secrets, jeweils ein JSON-String:
+Settings → Secrets and variables → Actions → New secret. Drei Secrets,
+jeweils ein **JSON-String** mit allen vier OAuth-1.0a-Werten:
 
-- `X_TOKENS_DE`:
+- `X_TOKENS_DE`
   ```json
   {"apiKey":"…","apiSecret":"…","accessToken":"…","accessSecret":"…"}
   ```
-- `X_TOKENS_FR`: dito für `@alarmemeteo`
-- `X_TOKENS_IT`: dito für `@allarmemeteo`
+- `X_TOKENS_FR` — dito für `@alarmemeteo`
+- `X_TOKENS_IT` — dito für `@allarmemeteo`
 
-Die vier Werte je Account werden im [X Developer Portal](https://developer.x.com) erzeugt (Read+Write-Permissions auf der App).
+Tokens werden im [X Developer Portal](https://developer.x.com) erzeugt,
+**Permissions = Read + Write**, App in einem Pay-Per-Use-Projekt
+(Free Tier wurde am 06.02.2026 abgeschafft).
 
-### 3. Render-Seite muss laufen
+### 3. Render-Seite muss erreichbar sein
 
-`tool.wetteralarm.ch/x-warnungen/render.html` (siehe `../render/`) muss erreichbar sein und auf `?env=prod`/`?env=stage` reagieren.
+`https://tool.wetteralarm.ch/x-warnungen/render.html?env=prod|stage`
+liegt im Schwesterverzeichnis [`../render/`](../render/) und muss auf
+Infomaniak deployed sein. Sie liefert das Bild, das in den Tweet kommt.
 
 ## Lokaler Testlauf
 
-```bash
+```powershell
 npm install
 npx playwright install chromium
 
-# Dry-Run — keine Tweets, Bild als JPEG in state/dry-run-*.jpg
-DRY_RUN=true ENV=stage RENDER_BASE_URL=https://tool.wetteralarm.ch/x-warnungen npm run post
+# Dry-Run — keine Tweets, Screenshot in state/screenshot-dry-*.jpg
+$env:DRY_RUN = "true"
+$env:ENV = "stage"
+$env:RENDER_BASE_URL = "https://tool.wetteralarm.ch/x-warnungen"
+npm run post
 
 # Live (nur mit echten Tokens als env-vars):
-ENV=stage X_TOKENS_DE='{"apiKey":…}' npm run post
+$env:DRY_RUN = "false"
+$env:X_TOKENS_DE = '{"apiKey":"…","apiSecret":"…","accessToken":"…","accessSecret":"…"}'
+npm run post
 ```
 
 ## Manueller Trigger via GitHub-UI
 
-Actions-Tab → Workflow „Unwetterwarnungen auf X posten" → „Run workflow":
-- `env: stage` oder `prod`
-- `dry_run: true` für Test (Screenshot wird als Artifact hochgeladen, keine Tweets)
+Actions-Tab → Workflow "Unwetterwarnungen auf X posten" → "Run workflow":
+
+- `env`: `prod` oder `stage`
+- `dry_run`: `true` für Testlauf (Screenshot als Workflow-Artefakt,
+  keine Tweets) oder `false` für echtes Posting.
 
 ## Files
 
-- `post.js` — Hauptlogik
-- `lib/templates.js` — Tweet-Text-Builder (DE/FR/IT)
-- `lib/dedupe.js` — State-Management
-- `render-screenshot.js` — Playwright-Wrapper für den Karten-Screenshot
-- `state/posted.json` — De-Dup-State (wird vom Workflow commited)
-- `.github/workflows/post.yml` — Cron-Workflow
+| Datei                          | Zweck                                                |
+|--------------------------------|------------------------------------------------------|
+| `post.js`                      | Hauptlogik (Cron-Entry, Cooldown, Entwarnung)        |
+| `lib/templates.js`             | Tweet-Builder (DE/FR/IT, 3 Detail-Modi, Clear-Tweet) |
+| `lib/dedupe.js`                | State-Management (`posted.json` + Meta-Felder)       |
+| `render-screenshot.js`         | Playwright-Wrapper für den 1200×675-Screenshot       |
+| `state/posted.json`            | De-Dup-State, vom Workflow committed                 |
+| `.github/workflows/post.yml`   | Cron-Workflow (alle 5 Min)                           |
+
+## Environment-Variablen
+
+| Var               | Pflicht | Default                                       | Wirkung                          |
+|-------------------|---------|-----------------------------------------------|----------------------------------|
+| `ENV`             | nein    | `prod`                                        | API-Umgebung (`prod` / `stage`)  |
+| `DRY_RUN`         | nein    | `false`                                       | Kein X-Post; State + Screenshot bleiben |
+| `RENDER_BASE_URL` | nein    | `https://tool.wetteralarm.ch/x-warnungen`     | Basis-URL der Render-Seite       |
+| `X_TOKENS_DE`     | ja*     | —                                             | JSON-String OAuth-1.0a DE-Account|
+| `X_TOKENS_FR`     | ja*     | —                                             | JSON-String OAuth-1.0a FR-Account|
+| `X_TOKENS_IT`     | ja*     | —                                             | JSON-String OAuth-1.0a IT-Account|
+
+\* Im Live-Modus mindestens **eines** der drei Token-Sets. Sprachen ohne
+gültige Tokens werden übersprungen, der Run schlägt aber nicht fehl, solange
+mindestens ein Account postbar ist.
