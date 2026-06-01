@@ -305,8 +305,21 @@ async function main() {
                 console.error('[main] Vorinfo: ohne Bild kein Post → abbrechen.');
                 return;
             }
+            // Helper: in das geposteten-Set einfügen (sowohl Hauptlage- als
+            // auch frühster-Alarm-Tag — beide Schlüssel zählen als "abgedeckt",
+            // damit auch nach Code-/Semantik-Änderungen kein Doppelpost passiert).
+            const markPreInfoPosted = () => {
+                if (!state._postedPreInfoDates) state._postedPreInfoDates = {};
+                const ts = Date.now();
+                state._postedPreInfoDates[preInfo.targetDate] = ts;
+                if (preInfo.firstDate && preInfo.firstDate !== preInfo.targetDate) {
+                    state._postedPreInfoDates[preInfo.firstDate] = ts;
+                }
+                state._lastPreInfoTargetDate = preInfo.targetDate; // backwards-compat
+            };
+
             if (DRY_RUN) {
-                state._lastPreInfoTargetDate = preInfo.targetDate;
+                markPreInfoPosted();
                 await saveState(STATE_FILE, state);
                 console.log('[main] DRY_RUN preinfo: State aktualisiert. Kein Tweet gesendet.');
                 return;
@@ -316,7 +329,7 @@ async function main() {
             if (anySuccess) {
                 // _lastPostType wird NICHT auf 'preinfo' gesetzt — Entwarnung soll nur
                 // nach echten Warnungs-Posts ausgelöst werden, nicht nach Vorinformationen.
-                state._lastPreInfoTargetDate = preInfo.targetDate;
+                markPreInfoPosted();
                 await saveState(STATE_FILE, state);
                 console.log('[main] Vorinformation gepostet, State persistiert.');
             } else {
