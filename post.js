@@ -30,6 +30,8 @@ import { TwitterApi } from 'twitter-api-v2';
 import {
     buildTweets,
     buildClearTweets,
+    buildPreInfoTweets,
+    detectPreInfoCondition,
     filterActiveAlarms,
     hasAnyActiveAlarmAllLevels
 } from './lib/templates.js';
@@ -284,7 +286,47 @@ async function main() {
     // 2) Warnungs-Logik (es gibt Stufe-2/3-Alarme — nur diese triggern Posts)
     // ---------------------------------------------------------------
     if (active.length === 0) {
-        // Es laufen nur Stufe-1-Alarme — kein Post, aber auch keine Entwarnung.
+        // Keine Stufe-2/3-Alarme aktiv. Aber vielleicht ist die Stufe-1-Lage
+        // breitflächig genug für eine Vorinformation (siehe templates.js).
+        const preInfo = detectPreInfoCondition(alarms, state);
+        if (preInfo.shouldPost) {
+            console.log(
+                `[main] Vorinformation: ${preInfo.regionCount} Regionen (${preInfo.regionRatio}%)` +
+                ` — target=${preInfo.targetDate}`
+            );
+            const tweets = buildPreInfoTweets(preInfo);
+            for (const lang of LANGS) {
+                console.log(
+                    `\n[tweet:${lang}] (preinfo, ${tweets[lang].length} Zeichen)\n${tweets[lang]}\n`
+                );
+            }
+            const { jpeg, error: shotError } = await takeScreenshot('preinfo');
+            if (shotError && !DRY_RUN) {
+                console.error('[main] Vorinfo: ohne Bild kein Post → abbrechen.');
+                return;
+            }
+            if (DRY_RUN) {
+                state._lastPreInfoTargetDate = preInfo.targetDate;
+                await saveState(STATE_FILE, state);
+                console.log('[main] DRY_RUN preinfo: State aktualisiert. Kein Tweet gesendet.');
+                return;
+            }
+            const results = await postAllLangs(tweets, jpeg);
+            const anySuccess = Object.values(results).some(r => r.ok);
+            if (anySuccess) {
+                // _lastPostType wird NICHT auf 'preinfo' gesetzt — Entwarnung soll nur
+                // nach echten Warnungs-Posts ausgelöst werden, nicht nach Vorinformationen.
+                state._lastPreInfoTargetDate = preInfo.targetDate;
+                await saveState(STATE_FILE, state);
+                console.log('[main] Vorinformation gepostet, State persistiert.');
+            } else {
+                console.error('[main] Vorinfo: kein Tweet erfolgreich → State NICHT aktualisiert.');
+                process.exitCode = 1;
+            }
+            return;
+        }
+        // Es laufen nur Stufe-1-Alarme, aber Vorinfo-Bedingung nicht erfüllt
+        // (zu wenige Regionen, zu kurzer Vorlauf, oder schon gepostet).
         console.log('[main] Nur Stufe-1-Alarme aktiv → kein Post, keine Entwarnung.');
         await resetFirstSeenIfSet(state);
         return;
