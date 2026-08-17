@@ -530,8 +530,9 @@
   "337057": 1786917063234,
   "337059": 1786917063234,
   "337062": 1786917063234,
-  "_lastPostedAt": 1786930268121,
-  "_lastPostType": "clear",
+  "337063": 1786936853924,
+  "_lastPostedAt": 1786936853924,
+  "_lastPostType": "warning",
   "_lastPreInfoTargetDate": "2026-06-02",
   "_postedPreInfoDates": {},
   "_contentHashes": {
@@ -578,6 +579,7 @@
     "151|thunderstorm|2": 1786917063234,
     "113|thunderstorm|2": 1786917063234,
     "106|thunderstorm|2": 1786917063234,
-    "152|thunderstorm|2": 1786917063234
+    "152|thunderstorm|2": 1786917063234,
+    "171|thunderstorm|2": 1786936853924
   }
 }
