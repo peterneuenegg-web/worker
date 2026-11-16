@@ -29,7 +29,9 @@ concurrency:
 
 jobs:
   post:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest zeigt seit Nov 2026 auf Ubuntu 26.04, das Playwright
+    # 1.60 nicht unterstützt ("does not support chromium on ubuntu26.04-x64").
+    runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5

@@ -12,13 +12,20 @@
  *        d) State aktualisieren, neuen State committen (durch Workflow).
  *   5. Wenn keine neuen Alarme → nichts tun.
  *
- * DRY_RUN=true → keine Tweets, kein Bild-Upload; State trotzdem updaten,
- *                damit Stage-Testläufe nicht jedes Mal als "neu" rendern.
+ * Vor Schritt 1 läuft bei jedem Run das Aufräumen: Tweets aus dem Register
+ * (state._tweets), deren deleteAfter erreicht ist, werden auf X gelöscht.
+ * Warnungs-Posts: deleteAfter = max(valid_to der enthaltenen Alarme) +
+ * TWEET_RETENTION_DAYS. Entwarnung/Vorinfo: Post-Zeitpunkt + TWEET_RETENTION_DAYS.
+ *
+ * DRY_RUN=true → keine Tweets, kein Bild-Upload, kein Löschen; State trotzdem
+ *                updaten, damit Stage-Testläufe nicht jedes Mal als "neu" rendern.
  *
  * Environment-Variablen:
  *   ENV               = 'prod' | 'stage'  (Default: 'prod')
  *   RENDER_BASE_URL   = z.B. https://tool.wetteralarm.ch/x-warnungen
  *   DRY_RUN           = 'true' für Testlauf ohne Posting
+ *   TWEET_RETENTION_DAYS = Tage nach Gültigkeitsende, bis ein Post gelöscht
+ *                       wird (Default: 14)
  *   X_TOKENS_DE       = JSON-String mit { apiKey, apiSecret, accessToken, accessSecret }
  *   X_TOKENS_FR       = "
  *   X_TOKENS_IT       = "
@@ -44,13 +51,24 @@ import {
     getLastPostType,
     getFirstSeenAt,
     setFirstSeenAt,
-    clearFirstSeenAt
+    clearFirstSeenAt,
+    recordTweets,
+    getTweetsDueForDeletion,
+    removeTweet
 } from './lib/dedupe.js';
 import { captureMap } from './render-screenshot.js';
 
 const ENV = process.env.ENV === 'stage' ? 'stage' : 'prod';
 const RENDER_BASE_URL = process.env.RENDER_BASE_URL || 'https://tool.wetteralarm.ch/x-warnungen';
 const DRY_RUN = process.env.DRY_RUN === 'true';
+
+// Aufbewahrung: Posts werden TWEET_RETENTION_DAYS nach Gültigkeitsende gelöscht.
+const TWEET_RETENTION_DAYS = Number.parseInt(process.env.TWEET_RETENTION_DAYS || '14', 10);
+const TWEET_RETENTION_MS = (Number.isFinite(TWEET_RETENTION_DAYS) && TWEET_RETENTION_DAYS > 0
+    ? TWEET_RETENTION_DAYS : 14) * 24 * 60 * 60 * 1000;
+// Rate-Limit DELETE /2/tweets/:id ist 50 / 15 min pro Account — pro Run
+// deutlich darunter bleiben, Rest wird beim nächsten 5-Min-Run abgearbeitet.
+const MAX_DELETES_PER_RUN = 20;
 
 const API_HOSTS = {
     prod:  'https://my.wetteralarm.ch',
@@ -130,6 +148,72 @@ async function postToX(client, lang, text, imageBuffer) {
         console.error(`[post:${lang}] ✗ Fehler:`, e.data || e.message || e);
         return { ok: false, reason: e.message || String(e) };
     }
+}
+
+// ===========================================
+// Löschen alter Posts
+// ===========================================
+
+/**
+ * deleteAfter für einen Warnungs-Post: Ende der spätesten Alarm-Gültigkeit
+ * plus Aufbewahrungsfrist. Ohne auswertbares valid_to → ab Post-Zeitpunkt.
+ */
+function computeDeleteAfter(alarms, now = Date.now()) {
+    let latestValidTo = 0;
+    for (const a of alarms || []) {
+        const to = new Date(a.valid_to).getTime();
+        if (Number.isFinite(to) && to > latestValidTo) latestValidTo = to;
+    }
+    return Math.max(latestValidTo, now) + TWEET_RETENTION_MS;
+}
+
+/**
+ * Löscht fällige Tweets aus dem Register. Wird bei jedem Run aufgerufen,
+ * unabhängig von der Alarmlage. Erfolg oder 404 (Tweet schon weg) → Eintrag
+ * raus; jeder andere Fehler → Eintrag bleibt, Retry beim nächsten Run.
+ * Rückgabe: true, wenn sich der State geändert hat.
+ */
+async function deleteExpiredTweets(state) {
+    const due = getTweetsDueForDeletion(state);
+    if (due.length === 0) return false;
+    console.log(`[cleanup] ${due.length} Tweet(s) fällig zum Löschen.`);
+
+    const clients = {};
+    let changed = false;
+    let done = 0;
+    for (const t of due) {
+        if (done >= MAX_DELETES_PER_RUN) {
+            console.log(`[cleanup] Limit ${MAX_DELETES_PER_RUN}/Run erreicht — Rest beim nächsten Run.`);
+            break;
+        }
+        const ageDays = Math.round((Date.now() - t.postedAt) / 86400000);
+        if (DRY_RUN) {
+            console.log(`[cleanup:${t.lang}] DRY_RUN — würde löschen: ${t.id} (${t.type}, ${ageDays} d alt)`);
+            continue;
+        }
+        if (!(t.lang in clients)) clients[t.lang] = loadTwitterClient(t.lang);
+        const client = clients[t.lang];
+        if (!client) {
+            console.warn(`[cleanup:${t.lang}] Kein Client — ${t.id} bleibt im Register.`);
+            continue;
+        }
+        try {
+            await client.v2.deleteTweet(t.id);
+            console.log(`[cleanup:${t.lang}] ✓ gelöscht: ${t.id} (${t.type}, ${ageDays} d alt)`);
+            removeTweet(state, t.id);
+            changed = true;
+        } catch (e) {
+            if (e && e.code === 404) {
+                console.log(`[cleanup:${t.lang}] ${t.id} existiert nicht mehr (404) — aus Register entfernt.`);
+                removeTweet(state, t.id);
+                changed = true;
+            } else {
+                console.error(`[cleanup:${t.lang}] ✗ ${t.id}:`, e.data || e.message || e);
+            }
+        }
+        done++;
+    }
+    return changed;
 }
 
 // ===========================================
@@ -238,6 +322,15 @@ async function main() {
     const lastPostType = getLastPostType(state);
 
     // ---------------------------------------------------------------
+    // 0) Aufräumen: fällige alte Posts auf X löschen (unabhängig von der Lage).
+    //    Sofort persistieren — main() hat viele frühe return-Pfade.
+    // ---------------------------------------------------------------
+    if (await deleteExpiredTweets(state)) {
+        await saveState(STATE_FILE, state);
+        console.log('[cleanup] Register persistiert.');
+    }
+
+    // ---------------------------------------------------------------
     // 1) Entwarnungs-Logik
     // ---------------------------------------------------------------
     // Es gibt KEINEN aktiven Alarm mehr (auch keine Stufe 1), aber der letzte
@@ -270,6 +363,7 @@ async function main() {
             const anySuccess = Object.values(results).some(r => r.ok);
             if (anySuccess) {
                 markPosted(state, [], 'clear');
+                recordTweets(state, results, 'clear', Date.now() + TWEET_RETENTION_MS);
                 await saveState(STATE_FILE, state);
                 console.log('[main] Entwarnung gepostet, State persistiert.');
             } else {
@@ -330,6 +424,7 @@ async function main() {
                 // _lastPostType wird NICHT auf 'preinfo' gesetzt — Entwarnung soll nur
                 // nach echten Warnungs-Posts ausgelöst werden, nicht nach Vorinformationen.
                 markPreInfoPosted();
+                recordTweets(state, results, 'preinfo', Date.now() + TWEET_RETENTION_MS);
                 await saveState(STATE_FILE, state);
                 console.log('[main] Vorinformation gepostet, State persistiert.');
             } else {
@@ -429,6 +524,7 @@ async function main() {
     const anySuccess = Object.values(results).some(r => r.ok);
     if (anySuccess) {
         markPosted(state, active, 'warning');
+        recordTweets(state, results, 'warning', computeDeleteAfter(active));
         await saveState(STATE_FILE, state);
         console.log('[main] State persistiert.');
     } else {

@@ -53,6 +53,25 @@ $env:X_TOKENS_DE = '{"apiKey":"…","apiSecret":"…","accessToken":"…","acces
 npm run post
 ```
 
+## Alt-Posts einmalig aufräumen
+
+Lokal (Dry-Run ist Default — listet nur auf):
+
+```powershell
+$env:X_TOKENS_DE = '{"apiKey":"…","apiSecret":"…","accessToken":"…","accessSecret":"…"}'
+$env:X_TOKENS_FR = '…'
+$env:X_TOKENS_IT = '…'
+npm run cleanup-old-posts
+
+# Scharf (löscht + schreibt Register nach state/posted.json — danach committen/pushen!):
+$env:DRY_RUN = "false"
+npm run cleanup-old-posts
+```
+
+Optional `$env:LANGS = "de"` für einen einzelnen Account. Einfacher: Workflow
+"Alte Posts auf X aufräumen (einmalig)" im Actions-Tab — der committet den
+State selbst.
+
 ## Manueller Trigger via GitHub-UI
 
 Actions-Tab → Workflow "Unwetterwarnungen auf X posten" → "Run workflow":
@@ -65,12 +84,14 @@ Actions-Tab → Workflow "Unwetterwarnungen auf X posten" → "Run workflow":
 
 | Datei                          | Zweck                                                |
 |--------------------------------|------------------------------------------------------|
-| `post.js`                      | Hauptlogik (Cron-Entry, Cooldown, Entwarnung)        |
+| `post.js`                      | Hauptlogik (Cron-Entry, Cooldown, Entwarnung, Löschen alter Posts) |
+| `cleanup-old-posts.js`         | Einmal-Script: Alt-Posts via Timeline löschen/registrieren |
 | `lib/templates.js`             | Tweet-Builder (DE/FR/IT, 3 Detail-Modi, Clear-Tweet) |
 | `lib/dedupe.js`                | State-Management (`posted.json` + Meta-Felder)       |
 | `render-screenshot.js`         | Playwright-Wrapper für den 1200×675-Screenshot       |
-| `state/posted.json`            | De-Dup-State, vom Workflow committed                 |
+| `state/posted.json`            | De-Dup-State + Tweet-Register, vom Workflow committed |
 | `.github/workflows/post.yml`   | Cron-Workflow (alle 5 Min)                           |
+| `.github/workflows/cleanup-old-posts.yml` | Manueller Workflow fürs einmalige Aufräumen |
 
 ## Environment-Variablen
 
@@ -79,6 +100,7 @@ Actions-Tab → Workflow "Unwetterwarnungen auf X posten" → "Run workflow":
 | `ENV`             | nein    | `prod`                                        | API-Umgebung (`prod` / `stage`)  |
 | `DRY_RUN`         | nein    | `false`                                       | Kein X-Post; State + Screenshot bleiben |
 | `RENDER_BASE_URL` | nein    | `https://tool.wetteralarm.ch/x-warnungen`     | Basis-URL der Render-Seite       |
+| `TWEET_RETENTION_DAYS` | nein | `14`                                     | Tage nach Gültigkeitsende, bis ein Post gelöscht wird |
 | `X_TOKENS_DE`     | ja*     | —                                             | JSON-String OAuth-1.0a DE-Account|
 | `X_TOKENS_FR`     | ja*     | —                                             | JSON-String OAuth-1.0a FR-Account|
 | `X_TOKENS_IT`     | ja*     | —                                             | JSON-String OAuth-1.0a IT-Account|

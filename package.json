@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "post": "node post.js",
-    "dry-run": "DRY_RUN=true node post.js"
+    "dry-run": "DRY_RUN=true node post.js",
+    "cleanup-old-posts": "node cleanup-old-posts.js"
   },
   "dependencies": {
     "playwright": "^1.50.1",
