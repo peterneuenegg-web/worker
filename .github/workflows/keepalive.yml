@@ -1,0 +1,38 @@
+name: keepalive
+
+# GitHub deaktiviert zeitgesteuerte Workflows in öffentlichen Repos nach
+# 60 Tagen ohne Commit (state «disabled_inactivity») — so fehlten vom
+# 31.08. bis 30.09.2026 alle Hageldaten in der Schadensplausibilisierung.
+# Dieser Job aktiviert die Workflows des Repos (inkl. sich selbst) zweimal
+# im Monat über die API neu; das setzt den Inaktivitäts-Zähler zurück, ohne
+# Commit. Von Hand deaktivierte Workflows (disabled_manually) bleiben aus.
+
+on:
+  schedule:
+    - cron: "17 4 1,15 * *"   # 1. und 15. jedes Monats, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Workflows reaktivieren
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/actions/workflows" --paginate \
+            --jq '.workflows[] | "\(.id) \(.state) \(.path)"' |
+          while read -r id state path; do
+            if [ "$state" = "disabled_manually" ]; then
+              echo "übersprungen: $path (von Hand deaktiviert)"
+              continue
+            fi
+            gh api -X PUT "repos/$REPO/actions/workflows/$id/enable" > /dev/null
+            echo "aktiviert: $path (vorher: $state)"
+          done

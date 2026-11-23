@@ -108,3 +108,7 @@ Actions-Tab → Workflow "Unwetterwarnungen auf X posten" → "Run workflow":
 \* Im Live-Modus mindestens **eines** der drei Token-Sets. Sprachen ohne
 gültige Tokens werden übersprungen, der Run schlägt aber nicht fehl, solange
 mindestens ein Account postbar ist.
+
+## Keepalive
+
+GitHub deaktiviert zeitgesteuerte Workflows in öffentlichen Repos nach 60 Tagen ohne Commit (`disabled_inactivity`); beim Hagel-Worker fehlten deshalb vom 31.08. bis 30.09.2026 alle Daten. [`.github/workflows/keepalive.yml`](.github/workflows/keepalive.yml) aktiviert am 1. und 15. jedes Monats alle Workflows des Repos über die API neu (`permissions: actions: write`, keine Fremd-Actions). Von Hand deaktivierte Workflows bleiben aus. Sofort auslösen: Actions → keepalive → Run workflow.
