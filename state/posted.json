@@ -17,13 +17,11 @@
   "339819": 1794837689779,
   "339820": 1794837689779,
   "340122": 1795274474564,
-  "_lastPostedAt": 1795274474564,
-  "_lastPostType": "warning",
+  "_lastPostedAt": 1795509962583,
+  "_lastPostType": "clear",
   "_lastPreInfoTargetDate": "2026-08-28",
   "_postedPreInfoDates": {},
-  "_contentHashes": {
-    "136|rain|2": 1795274474564
-  },
+  "_contentHashes": {},
   "_tweets": [
     {
       "id": "2122329199646023685",
@@ -87,6 +85,27 @@
       "type": "warning",
       "postedAt": 1795274474564,
       "deleteAfter": 1796648400000
+    },
+    {
+      "id": "2125148918875074656",
+      "lang": "de",
+      "type": "clear",
+      "postedAt": 1795509962583,
+      "deleteAfter": 1796719562583
+    },
+    {
+      "id": "2125148922872320002",
+      "lang": "fr",
+      "type": "clear",
+      "postedAt": 1795509962583,
+      "deleteAfter": 1796719562583
+    },
+    {
+      "id": "2125148927330787440",
+      "lang": "it",
+      "type": "clear",
+      "postedAt": 1795509962583,
+      "deleteAfter": 1796719562583
     }
   ]
 }
